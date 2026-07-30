@@ -1,0 +1,26 @@
+id: org.lfscan.lfscan
+runtime: org.freedesktop.Sdk
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+command: lfscan
+
+finish-args:
+  # Filesystem access for scanning temp/cache dirs
+  - --filesystem=/tmp
+  - --filesystem=/var/tmp
+  - --filesystem=~/.cache
+  - --filesystem=~/.local/share/lfscan:create
+  # System access for journal, containers, etc.
+  - --talk-name=org.freedesktop.systemd1
+  - --socket=session-bus
+
+modules:
+  - name: lfscan
+    buildsystem: cmake-ninja
+    builddir: true
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+    sources:
+      - type: git
+        url: https://github.com/AhmadRun/lfscan.git
+        branch: main
