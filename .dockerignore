@@ -1,0 +1,7 @@
+build/
+.git/
+*.swp
+*.swo
+.DS_Store
+*.tar.gz
+*.tgz
