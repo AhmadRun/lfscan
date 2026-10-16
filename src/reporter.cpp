@@ -33,7 +33,15 @@ std::string Reporter::escape_json(const std::string& s) {
         case '\\': oss << "\\\\"; break;
         case '\n': oss << "\\n";  break;
         case '\t': oss << "\\t";  break;
-        default:   oss << c;      break;
+        case '\r': oss << "\\r";  break;
+        default:
+            // Other control characters are not allowed raw in JSON strings
+            if (static_cast<unsigned char>(c) < 0x20)
+                oss << "\\u" << std::hex << std::setw(4) << std::setfill('0')
+                    << static_cast<int>(c) << std::dec << std::setfill(' ');
+            else
+                oss << c;
+            break;
         }
     }
     return oss.str();

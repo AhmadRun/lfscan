@@ -8,11 +8,11 @@ std::vector<ScanResult> BrokenSymlinkDetector::detect(
     if (ec || status.type() != fs::file_type::symlink)
         return {};
 
-    auto target = fs::read_symlink(path, ec);
-    if (ec)
-        return {};
-
-    if (fs::exists(target, ec) || ec)
+    // fs::status follows the link, resolving relative targets against the
+    // link's own directory (not the current working directory).
+    // Anything other than "not found" (e.g. permission denied) can't be
+    // confirmed broken, so it isn't flagged.
+    if (fs::status(path, ec).type() != fs::file_type::not_found)
         return {};
 
     std::vector<ScanResult> out;

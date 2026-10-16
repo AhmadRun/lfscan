@@ -9,7 +9,7 @@ PatternDetector::PatternDetector(std::vector<std::string> patterns)
 
 std::vector<ScanResult> PatternDetector::detect(const fs::path& path) const {
     std::error_code ec;
-    if (!fs::is_regular_file(path, ec) || ec)
+    if (!fs::is_regular_file(fs::symlink_status(path, ec)) || ec)
         return {};
 
     auto filename = path.filename().string();
@@ -17,6 +17,8 @@ std::vector<ScanResult> PatternDetector::detect(const fs::path& path) const {
     for (const auto& pat : patterns_) {
         if (fnmatch(pat.c_str(), filename.c_str(), 0) == 0) {
             auto ft = fs::last_write_time(path, ec);
+            if (ec)
+                return {};
             auto sz = fs::file_size(path, ec);
             if (ec)
                 return {};

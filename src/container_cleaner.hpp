@@ -14,6 +14,9 @@ public:
 
     const std::string&       last_error() const { return last_error_; }
 
+    // Parses sizes like "1.2GB" or "512.3kB (40%)" as printed by docker/podman
+    static std::uint64_t     parse_size(const std::string& s);
+
 private:
     enum class Runtime { None, Docker, Podman };
 
@@ -28,7 +31,6 @@ private:
     CleanupResult            clean_docker(const std::vector<CleanupItem>& items) const;
     CleanupResult            clean_podman(const std::vector<CleanupItem>& items) const;
 
-    static std::uint64_t parse_size(const std::string& s);
     static std::string   run_cmd(const std::string& cmd);
 
     mutable std::string last_error_;

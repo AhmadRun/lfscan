@@ -43,6 +43,14 @@ cleanup() {
 
 trap cleanup EXIT
 
+# Point the default scan targets ($TMPDIR, ~/.cache) at an empty sandbox so
+# the --delete/--quarantine tests below can't touch real files in /tmp or
+# the user's cache. (/var/tmp is still scanned.)
+mkdir -p /tmp/lfscan_test_sandbox/home
+export TMPDIR=/tmp/lfscan_test_sandbox
+export HOME=/tmp/lfscan_test_sandbox/home
+unset TMP
+
 # ── 1. Empty directory ──────────────────────────────────────────────
 echo "[1] Empty directory"
 mkdir -p /tmp/lfscan_test_empty
@@ -111,7 +119,11 @@ for i in $(seq 1 60); do
     d="$d/level$i"
 done
 touch -t 202001010000 "$d/deep_file.txt"
-$BIN -d 1 --no-color > /dev/null 2>&1 && echo "  PASS: deep nesting (no crash)" && pass=$((pass+1)) || echo "  FAIL: deep nesting crashed" && fail=$((fail+1))
+if $BIN -d 1 -t /tmp/lfscan_test_deep --no-color > /dev/null 2>&1; then
+    echo "  PASS: deep nesting (no crash)"; pass=$((pass+1))
+else
+    echo "  FAIL: deep nesting crashed"; fail=$((fail+1))
+fi
 
 # ── 9. Open file filtering ──────────────────────────────────────────
 echo "[9] Open file filtering"
@@ -154,9 +166,9 @@ check "delete reported" "Deleted 1" "$out"
 echo "[13] Quarantine"
 mkdir -p /tmp/lfscan_test_q
 touch -t 202001010000 /tmp/lfscan_test_q/q_file.tmp
-mkdir -p /tmp/lfscan_quar
-echo 'y' | $BIN -d 1 -t /tmp/lfscan_test_q --quarantine /tmp/lfscan_quar --force --no-color 2>/dev/null
-[ -f /tmp/lfscan_quar/manifest.txt ] && { echo "  PASS: quarantine created manifest"; ((pass++)); } || { echo "  FAIL: no manifest"; ((fail++)); }
+mkdir -p /tmp/lfscan_test_quar
+echo 'y' | $BIN -d 1 -t /tmp/lfscan_test_q --quarantine /tmp/lfscan_test_quar --force --no-color 2>/dev/null
+[ -f /tmp/lfscan_test_quar/manifest.txt ] && { echo "  PASS: quarantine created manifest"; ((pass++)); } || { echo "  FAIL: no manifest"; ((fail++)); }
 [ ! -f /tmp/lfscan_test_q/q_file.tmp ] && { echo "  PASS: file moved to quarantine"; ((pass++)); } || { echo "  FAIL: file still in original location"; ((fail++)); }
 
 # ── 14. TOML config file ────────────────────────────────────────────
@@ -187,6 +199,34 @@ else
     echo "  FAIL: multi-file detection (expected 20, got $count)"
     fail=$((fail+1))
 fi
+
+# ── 16. Relative symlinks ───────────────────────────────────────────
+echo "[16] Relative symlinks"
+mkdir -p /tmp/lfscan_test_rel
+touch /tmp/lfscan_test_rel/real.txt
+ln -s real.txt /tmp/lfscan_test_rel/rel_valid
+ln -s missing.txt /tmp/lfscan_test_rel/rel_broken
+out=$(cd / && $BIN -d 3650 -t /tmp/lfscan_test_rel --no-color 2>/dev/null)
+check_not "valid relative symlink not flagged" "rel_valid" "$out"
+check "broken relative symlink flagged" "rel_broken" "$out"
+
+# ── 17. Quarantine restore ──────────────────────────────────────────
+echo "[17] Quarantine restore"
+mkdir -p /tmp/lfscan_test_rs
+touch -t 202001010000 /tmp/lfscan_test_rs/back.tmp
+$BIN -d 1 -t /tmp/lfscan_test_rs --quarantine /tmp/lfscan_test_rsq --force --no-color >/dev/null 2>&1
+out=$($BIN --quarantine /tmp/lfscan_test_rsq --restore 1 --no-color 2>&1)
+check "restore reported" "Restored 1" "$out"
+[ -f /tmp/lfscan_test_rs/back.tmp ] && { echo "  PASS: file restored"; ((pass++)); } || { echo "  FAIL: file not restored"; ((fail++)); }
+out=$($BIN --restore 1 --no-color 2>&1 || true)
+check "restore without a quarantine dir errors" "need --quarantine" "$out"
+
+# ── 18. Bad config value ────────────────────────────────────────────
+echo "[18] Bad config value"
+mkdir -p /tmp/lfscan_test_badcfg
+printf 'max_age = abc\ntargets = ["/tmp/lfscan_test_badcfg"]\n' > /tmp/lfscan_test_badcfg/bad.toml
+out=$($BIN -c /tmp/lfscan_test_badcfg/bad.toml --no-color 2>&1)
+check "bad config value warns instead of crashing" "invalid max_age" "$out"
 
 # ── Summary ─────────────────────────────────────────────────────────
 echo ""

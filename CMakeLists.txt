@@ -11,7 +11,8 @@ include(FetchContent)
 FetchContent_Declare(
   cli11
   GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
-  GIT_TAG v2.4.0
+  GIT_TAG v2.7.2
+  GIT_SHALLOW TRUE
 )
 FetchContent_MakeAvailable(cli11)
 
@@ -40,7 +41,8 @@ include(FetchContent)
 FetchContent_Declare(
   ftxui
   GIT_REPOSITORY https://github.com/ArthurSonzogni/FTXUI.git
-  GIT_TAG v5.0.0
+  GIT_TAG v7.0.3
+  GIT_SHALLOW TRUE
 )
 FetchContent_MakeAvailable(ftxui)
 

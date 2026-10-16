@@ -14,15 +14,33 @@ static fs::path home_dir() {
 
 static fs::path env_or(const char* var, const fs::path& fallback) {
     const char* v = std::getenv(var);
-    return v ? fs::path(v) : fallback;
+    return (v && *v) ? fs::path(v) : fallback;
 }
 
+// Size of a file or a directory tree. Uses increment(ec) instead of a
+// range-for, which throws on unreadable subdirectories.
 static std::uint64_t dir_size(const fs::path& p) {
-    std::uint64_t total = 0;
     std::error_code ec;
-    for (const auto& e : fs::recursive_directory_iterator(p, ec)) {
-        if (fs::is_regular_file(e, ec))
-            total += fs::file_size(e, ec);
+    auto st = fs::symlink_status(p, ec);
+    if (ec)
+        return 0;
+    if (fs::is_regular_file(st)) {
+        auto sz = fs::file_size(p, ec);
+        return ec ? 0 : sz;
+    }
+    if (!fs::is_directory(st))
+        return 0;
+
+    std::uint64_t total = 0;
+    fs::recursive_directory_iterator it(
+        p, fs::directory_options::skip_permission_denied, ec);
+    for (fs::recursive_directory_iterator end; !ec && it != end; it.increment(ec)) {
+        std::error_code ec2;
+        if (it->is_regular_file(ec2) && !it->is_symlink(ec2)) {
+            auto sz = it->file_size(ec2);
+            if (!ec2)
+                total += sz;
+        }
     }
     return total;
 }
@@ -35,10 +53,14 @@ bool LanguageCacheCleaner::tool_installed(const std::string& name) {
 std::uint64_t LanguageCacheCleaner::remove_contents(const fs::path& dir) {
     std::uint64_t freed = 0;
     std::error_code ec;
-    for (auto& e : fs::directory_iterator(dir, ec)) {
-        auto sz = fs::is_regular_file(e, ec) ? fs::file_size(e, ec) : 0;
-        fs::remove_all(e, ec);
-        freed += sz;
+    fs::directory_iterator it(dir, ec);
+    for (fs::directory_iterator end; !ec && it != end; it.increment(ec)) {
+        // Count whole subtrees, not just top-level files
+        auto sz = dir_size(it->path());
+        std::error_code ec2;
+        fs::remove_all(it->path(), ec2);
+        if (!ec2)
+            freed += sz;
     }
     return freed;
 }
@@ -86,8 +108,12 @@ LanguageCacheCleaner::LanguageCacheCleaner() {
         "go-module",
         "Go module cache (downloaded modules)",
         [] {
-            auto gopath = env_or("GOPATH", home_dir() / "go");
-            return gopath / "pkg" / "mod";
+            // GOMODCACHE wins; otherwise the first GOPATH entry
+            if (const char* mc = std::getenv("GOMODCACHE"); mc && *mc)
+                return fs::path(mc);
+            std::string gopath = env_or("GOPATH", home_dir() / "go").string();
+            gopath = gopath.substr(0, gopath.find(':'));
+            return fs::path(gopath) / "pkg" / "mod";
         },
         "language-cache", Risk::Safe, true, "go",
     });
@@ -96,7 +122,7 @@ LanguageCacheCleaner::LanguageCacheCleaner() {
     defs_.push_back({
         "gradle-cache",
         "Gradle build cache",
-        [] { return home_dir() / ".gradle" / "caches"; },
+        [] { return env_or("GRADLE_USER_HOME", home_dir() / ".gradle") / "caches"; },
         "language-cache", Risk::Safe, true, "gradle",
     });
 
@@ -104,10 +130,8 @@ LanguageCacheCleaner::LanguageCacheCleaner() {
     defs_.push_back({
         "maven-repository",
         "Maven local repository (downloaded artifacts)",
-        [] {
-            const char* m2 = std::getenv("M2_HOME");
-            return (m2 ? fs::path(m2) : home_dir() / ".m2") / "repository";
-        },
+        // M2_HOME is the Maven install dir, not the local repository
+        [] { return home_dir() / ".m2" / "repository"; },
         "language-cache", Risk::Safe, true, "mvn",
     });
 }

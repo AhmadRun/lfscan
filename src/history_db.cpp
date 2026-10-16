@@ -90,11 +90,29 @@ std::int64_t HistoryDB::log_scan(const ScanRecord& rec) {
     sqlite3_bind_int(stmt, 3, rec.dry_run ? 1 : 0);
     sqlite3_bind_text(stmt, 4, rec.paths_scanned.c_str(), -1, SQLITE_TRANSIENT);
 
-    if (sqlite3_step(stmt) != SQLITE_DONE)
+    bool ok = sqlite3_step(stmt) == SQLITE_DONE;
+    if (!ok)
         std::cerr << "error: insert scan: " << sqlite3_errmsg(db) << '\n';
     sqlite3_finalize(stmt);
 
-    return sqlite3_last_insert_rowid(db);
+    return ok ? sqlite3_last_insert_rowid(db) : -1;
+}
+
+bool HistoryDB::update_scan_duration(std::int64_t scan_id,
+                                     std::int64_t duration_ms) {
+    auto db = static_cast<sqlite3*>(db_);
+
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "UPDATE scans SET duration_ms = ?1 WHERE id = ?2;";
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+        return false;
+
+    sqlite3_bind_int64(stmt, 1, duration_ms);
+    sqlite3_bind_int64(stmt, 2, scan_id);
+
+    bool ok = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+    return ok;
 }
 
 bool HistoryDB::log_result(const HistoryEntry& entry) {
@@ -163,7 +181,7 @@ HistoryDB::bytes_per_cleaner(int days) const {
         FROM scan_results sr
         JOIN scans s ON s.id = sr.scan_id
         WHERE sr.action = 'cleaned'
-          AND s.timestamp >= datetime('now', ?1)
+          AND datetime(s.timestamp) >= datetime('now', ?1)
         GROUP BY sr.cleaner
         ORDER BY SUM(sr.size_bytes) DESC
     )";

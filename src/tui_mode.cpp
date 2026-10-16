@@ -10,6 +10,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <map>
+#include <mutex>
 #include <memory>
 #include <set>
 #include <string>
@@ -117,10 +118,16 @@ static Element history_table(const std::vector<HistoryEntry>& entries) {
 int run_tui(HistoryDB& history, const std::string& db_path) {
     auto screen = ScreenInteractive::Fullscreen();
 
+    // State shared with the scan/watch worker threads is guarded by
+    // state_mtx; the threads are joined before this function returns, so
+    // the references they capture stay valid.
+    std::mutex              state_mtx;
     int                    tab_index = 0;
     std::vector<ScanResult> scan_results;
     std::string             status_text = "Ready";
-    bool                    scanning = false;
+    std::atomic<bool>       scanning{false};
+    std::thread             scan_thread;
+    std::thread             watch_thread;
 
     // History cache
     std::vector<HistoryEntry> history_cache;
@@ -134,41 +141,57 @@ int run_tui(HistoryDB& history, const std::string& db_path) {
     int                     watch_iteration{0};
     std::string             watch_status = "Stopped";
 
+    // Only signals the worker: joining here would freeze the UI until the
+    // current scan finishes. It is joined on the next start or on exit.
+    auto stop_watch = [&] {
+        watch_active.store(false);
+        std::lock_guard<std::mutex> lock(state_mtx);
+        watch_status = "Stopped";
+    };
+
     auto start_watch = [&] {
         if (watch_active.load()) return;
+        if (watch_thread.joinable())
+            watch_thread.join();
         watch_active.store(true);
-        watch_status = "Running";
-        watch_iteration = 0;
-        std::thread([&] {
+        {
+            std::lock_guard<std::mutex> lock(state_mtx);
+            watch_status = "Running";
+            watch_iteration = 0;
+        }
+        watch_thread = std::thread([&] {
             while (watch_active.load()) {
-                watch_results = run_scan();
-                watch_iteration++;
+                auto res = run_scan();
+                {
+                    std::lock_guard<std::mutex> lock(state_mtx);
+                    watch_results = std::move(res);
+                    watch_iteration++;
+                }
                 screen.PostEvent(Event::Custom);
                 for (int i = 0; i < 10 && watch_active.load(); ++i)
                     std::this_thread::sleep_for(std::chrono::seconds(1));
             }
-        }).detach();
-    };
-
-    auto stop_watch = [&] {
-        watch_active.store(false);
-        watch_status = "Stopped";
+        });
     };
 
     // ── Tab components ───────────────────────────────────────────
     auto scan_tab = Container::Vertical({
         Button(" Run Scan ", [&] {
-            if (scanning) return;
-            scanning = true;
-            status_text = "Scanning...";
-            std::thread([&] {
-                scan_results = run_scan();
+            if (scanning.exchange(true)) return;
+            if (scan_thread.joinable())
+                scan_thread.join();
+            {
+                std::lock_guard<std::mutex> lock(state_mtx);
+                status_text = "Scanning...";
+            }
+            scan_thread = std::thread([&] {
+                auto results = run_scan();
                 ScanRecord rec;
                 rec.dry_run = true;
                 rec.paths_scanned = "/tmp,/var/tmp,.cache";
                 auto sid = history.log_scan(rec);
                 if (sid >= 0) {
-                    for (const auto& r : scan_results) {
+                    for (const auto& r : results) {
                         HistoryEntry e;
                         e.scan_id    = sid;
                         e.cleaner    = r.detector_name;
@@ -179,15 +202,20 @@ int run_tui(HistoryDB& history, const std::string& db_path) {
                         history.log_result(e);
                     }
                 }
-                status_text = std::to_string(scan_results.size())
-                            + " file(s) flagged.";
+                {
+                    std::lock_guard<std::mutex> lock(state_mtx);
+                    status_text = std::to_string(results.size())
+                                + " file(s) flagged.";
+                    scan_results = std::move(results);
+                }
                 scanning = false;
                 screen.PostEvent(Event::Custom);
-            }).detach();
+            });
         }),
         Renderer([&] {
             if (scanning)
                 return text(" Scanning...") | bold | color(Color::Yellow);
+            std::lock_guard<std::mutex> lock(state_mtx);
             return result_table(scan_results);
         }),
     });
@@ -203,6 +231,7 @@ int run_tui(HistoryDB& history, const std::string& db_path) {
             Button(" Stop Watch ",  stop_watch),
         }),
         Renderer([&] {
+            std::lock_guard<std::mutex> lock(state_mtx);
             Elements lines;
             lines.push_back(text(""));
             lines.push_back(
@@ -243,6 +272,11 @@ int run_tui(HistoryDB& history, const std::string& db_path) {
         quit_btn,
     });
 
+    auto status_line = [&] {
+        std::lock_guard<std::mutex> lock(state_mtx);
+        return status_text;
+    };
+
     auto renderer = Renderer(main_container, [&] {
         return vbox(Elements{
             text(" lfscan — System Cleanup Tool") | bold | hcenter,
@@ -255,7 +289,7 @@ int run_tui(HistoryDB& history, const std::string& db_path) {
             separator(),
             tabs->Render() | flex,
             separator(),
-            text(" " + status_text) | dim,
+            text(" " + status_line()) | dim,
         });
     });
 
@@ -263,5 +297,12 @@ int run_tui(HistoryDB& history, const std::string& db_path) {
     refresh_history();
 
     screen.Loop(renderer);
+
+    // Don't leave workers running against this function's locals
+    watch_active.store(false);
+    if (watch_thread.joinable())
+        watch_thread.join();
+    if (scan_thread.joinable())
+        scan_thread.join();
     return 0;
 }

@@ -13,8 +13,8 @@
 std::string FlatpakCleaner::run_cmd(const std::string& cmd) {
     std::array<char, 4096> buf{};
     std::string result;
-    std::unique_ptr<FILE, decltype(&pclose)> pipe(
-        popen(cmd.c_str(), "r"), pclose);
+    auto closer = [](FILE* f) { pclose(f); };
+    std::unique_ptr<FILE, decltype(closer)> pipe(popen(cmd.c_str(), "r"), closer);
     if (!pipe)
         return {};
     while (fgets(buf.data(), buf.size(), pipe.get()) != nullptr)
@@ -42,9 +42,10 @@ std::uint64_t FlatpakCleaner::parse_flatpak_size(const std::string& s) {
     double val = std::stod(m[1].str());
     std::string unit = m[2].str();
 
-    if (unit == "kB")   val *= 1024ULL;
-    else if (unit == "MB")  val *= 1024ULL * 1024;
-    else if (unit == "GB")  val *= 1024ULL * 1024 * 1024;
+    // GLib's g_format_size() uses decimal (SI) units: 1 kB = 1000 B
+    if (unit == "kB")   val *= 1e3;
+    else if (unit == "MB")  val *= 1e6;
+    else if (unit == "GB")  val *= 1e9;
 
     return static_cast<std::uint64_t>(val);
 }

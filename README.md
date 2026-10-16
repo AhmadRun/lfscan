@@ -152,16 +152,16 @@ Files are moved to the quarantine directory. To see what's quarantined:
 lfscan --list-quarantine /home/user/lfscan-quarantine
 ```
 
-Restore a file by its ID:
+Restore files by their IDs (the quarantine directory is required):
 
 ```bash
-lfscan --restore 3 --restore 7
+lfscan --quarantine /home/user/lfscan-quarantine --restore 3 --restore 7
 ```
 
 Or restore everything:
 
 ```bash
-lfscan --restore-all /home/user/lfscan-quarantine
+lfscan --quarantine /home/user/lfscan-quarantine --restore-all
 ```
 
 ### Clean container runtimes
@@ -270,7 +270,7 @@ lfscan --history-db /custom/path/history.db
 | `lfscan --tui` | launch interactive TUI |
 | `lfscan --watch` | watch mode with notifications |
 | `lfscan --json \| jq .` | full machine-readable report |
-| `lfscan --quarantine /tmp/lock --restore 1` | quarantine files then restore one |
+| `lfscan --quarantine ~/lfscan-quarantine --restore 1` | restore one quarantined file by ID |
 
 ---
 

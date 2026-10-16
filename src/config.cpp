@@ -42,11 +42,30 @@ static std::vector<std::string> parse_toml_array(const std::string& value) {
     return out;
 }
 
+// Parse a day count in the same 1..3650 range the CLI accepts; keep the
+// default (and warn) instead of throwing on a bad value.
+static void parse_days(const std::string& key, const std::string& value, int& out) {
+    try {
+        std::size_t used = 0;
+        int v = std::stoi(value, &used);
+        if (used == value.size() && v >= 1 && v <= 3650) {
+            out = v;
+            return;
+        }
+    } catch (const std::exception&) {
+    }
+    std::cerr << "warning: config: invalid " << key << " = '" << value
+              << "' (expected 1-3650), using " << out << '\n';
+}
+
 Config load_config(const std::string& path) {
     Config cfg;
     std::ifstream f(path);
-    if (!f.is_open())
+    if (!f.is_open()) {
+        std::cerr << "warning: cannot read config file " << path
+                  << ", using defaults\n";
         return cfg;
+    }
 
     std::string line;
     while (std::getline(f, line)) {
@@ -83,9 +102,9 @@ Config load_config(const std::string& path) {
             value = value.substr(1, value.size() - 2);
 
         if (key == "max_age")
-            cfg.max_age_days = std::stoi(value);
+            parse_days(key, value, cfg.max_age_days);
         else if (key == "log_retention")
-            cfg.log_retention_days = std::stoi(value);
+            parse_days(key, value, cfg.log_retention_days);
         else if (key == "orphaned")
             cfg.flag_orphaned = (value == "true");
         else if (key == "stale_logs")
