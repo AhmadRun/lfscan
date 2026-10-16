@@ -16,8 +16,8 @@ namespace fs = std::filesystem;
 std::string SnapCleaner::run_cmd(const std::string& cmd) {
     std::array<char, 4096> buf{};
     std::string result;
-    std::unique_ptr<FILE, decltype(&pclose)> pipe(
-        popen(cmd.c_str(), "r"), pclose);
+    auto closer = [](FILE* f) { pclose(f); };
+    std::unique_ptr<FILE, decltype(closer)> pipe(popen(cmd.c_str(), "r"), closer);
     if (!pipe)
         return {};
     while (fgets(buf.data(), buf.size(), pipe.get()) != nullptr)

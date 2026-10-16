@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstddef>
 #include <iostream>
+#include <mutex>
 #include <string>
 
 class Progress {
@@ -12,6 +13,7 @@ class Progress {
     std::string              label_;
     int                      throttle_ms_{150};
     std::chrono::steady_clock::time_point last_update_;
+    std::mutex               mtx_;  // increment() is called from scanner threads
 
 public:
     explicit Progress(std::string label = "Scanned")
@@ -23,6 +25,9 @@ public:
 
     void increment() {
         auto c = ++count_;
+        std::unique_lock<std::mutex> lock(mtx_, std::try_to_lock);
+        if (!lock.owns_lock())
+            return;  // another thread is already printing
         auto now = std::chrono::steady_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             now - last_update_);

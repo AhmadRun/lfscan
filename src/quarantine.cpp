@@ -14,6 +14,35 @@ static std::string timestamp() {
     return oss.str();
 }
 
+bool move_path(const fs::path& src, const fs::path& dest, std::error_code& ec) {
+    ec.clear();
+    fs::rename(src, dest, ec);
+    if (!ec)
+        return true;
+    if (ec != std::errc::cross_device_link)
+        return false;
+
+    ec.clear();
+    fs::copy(src, dest,
+             fs::copy_options::recursive | fs::copy_options::copy_symlinks,
+             ec);
+    if (ec)
+        return false;
+    // Keep the original timestamp so age-based scans still see it as old
+    auto ft = fs::last_write_time(src, ec);
+    if (!ec && !fs::is_symlink(fs::symlink_status(src)))
+        fs::last_write_time(dest, ft, ec);
+    ec.clear();
+    fs::remove_all(src, ec);
+    if (ec) {
+        // Don't leave two copies behind
+        std::error_code ec2;
+        fs::remove_all(dest, ec2);
+        return false;
+    }
+    return true;
+}
+
 Quarantine::Quarantine(fs::path quarantine_dir)
     : quarantine_dir_(std::move(quarantine_dir))
     , manifest_path_(quarantine_dir_ / "manifest.txt")
@@ -40,8 +69,7 @@ bool Quarantine::move_to_quarantine(const ScanResult& result) {
         return false;
     }
 
-    fs::rename(result.path, dest, ec);
-    if (ec) {
+    if (!move_path(result.path, dest, ec)) {
         std::cerr << "error: cannot move file to quarantine ("
                   << ec.message() << ")\n";
         return false;

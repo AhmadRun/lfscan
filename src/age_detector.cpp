@@ -10,7 +10,8 @@ std::vector<ScanResult> AgeBasedDetector::detect(const fs::path& path) const {
     std::vector<ScanResult> results;
 
     std::error_code ec;
-    if (!fs::is_regular_file(path, ec) || ec)
+    // symlink_status: a symlink to an old file is not itself an old file
+    if (!fs::is_regular_file(fs::symlink_status(path, ec)) || ec)
         return results;
 
     auto ft = fs::last_write_time(path, ec);

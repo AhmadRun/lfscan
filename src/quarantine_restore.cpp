@@ -1,4 +1,5 @@
 #include "quarantine_restore.hpp"
+#include "quarantine.hpp"
 
 #include <ctime>
 #include <fstream>
@@ -110,8 +111,7 @@ RestoreResult QuarantineRestore::restore(
         // Create parent directory if needed
         fs::create_directories(restore_dest.parent_path(), ec);
 
-        fs::rename(found->quarantined_path, restore_dest, ec);
-        if (ec) {
+        if (!move_path(found->quarantined_path, restore_dest, ec)) {
             result.errors.push_back("failed to restore " + found->id + ": "
                                     + ec.message());
             result.failed++;
@@ -123,8 +123,12 @@ RestoreResult QuarantineRestore::restore(
         std::ifstream in(quarantine_dir_ / "manifest.txt");
         std::string line;
         while (std::getline(in, line)) {
-            // Keep lines that don't match this entry's quarantined path
-            if (line.find(found->quarantined_path) == std::string::npos)
+            // Keep lines whose quarantined path (2nd field) is a different
+            // file. A substring match would also drop "a.tmp.1" for "a.tmp".
+            auto t1 = line.find('\t');
+            auto t2 = (t1 == std::string::npos) ? t1 : line.find('\t', t1 + 1);
+            if (t2 == std::string::npos
+                || line.compare(t1 + 1, t2 - t1 - 1, found->quarantined_path) != 0)
                 keep.push_back(line);
         }
         in.close();

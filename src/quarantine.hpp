@@ -6,6 +6,10 @@
 
 namespace fs = std::filesystem;
 
+// Move src to dest. Falls back to copy + remove when they are on different
+// filesystems (rename(2) fails with EXDEV, e.g. /tmp on tmpfs -> $HOME).
+bool move_path(const fs::path& src, const fs::path& dest, std::error_code& ec);
+
 class Quarantine {
     fs::path quarantine_dir_;
     fs::path manifest_path_;

@@ -17,8 +17,8 @@
 std::string ContainerCleaner::run_cmd(const std::string& cmd) {
     std::array<char, 4096> buf{};
     std::string result;
-    std::unique_ptr<FILE, decltype(&pclose)> pipe(
-        popen(cmd.c_str(), "r"), pclose);
+    auto closer = [](FILE* f) { pclose(f); };
+    std::unique_ptr<FILE, decltype(closer)> pipe(popen(cmd.c_str(), "r"), closer);
     if (!pipe)
         return {};
     while (fgets(buf.data(), buf.size(), pipe.get()) != nullptr)
@@ -40,10 +40,11 @@ std::uint64_t ContainerCleaner::parse_size(const std::string& s) {
     double val = std::stod(m[1].str());
     std::string unit = m[2].str();
 
-    if (unit == "kB" || unit == "KB")   val *= 1024ULL;
-    else if (unit == "MB")              val *= 1024ULL * 1024;
-    else if (unit == "GB")              val *= 1024ULL * 1024 * 1024;
-    else if (unit == "TB")              val *= 1024ULL * 1024 * 1024 * 1024;
+    // Docker and Podman print decimal (SI) units: 1 kB = 1000 B
+    if (unit == "kB" || unit == "KB")   val *= 1e3;
+    else if (unit == "MB")              val *= 1e6;
+    else if (unit == "GB")              val *= 1e9;
+    else if (unit == "TB")              val *= 1e12;
 
     return static_cast<std::uint64_t>(val);
 }
@@ -186,47 +187,45 @@ ContainerCleaner::Runtime ContainerCleaner::detect_runtime() const {
 
 // ── scan ─────────────────────────────────────────────────────────────
 
-std::vector<CleanupItem> ContainerCleaner::scan_docker() const {
+// `system df` with a tab-separated --format: the default table output has
+// two-word types ("Local Volumes", "Build Cache") that break word splitting.
+static std::vector<CleanupItem> parse_system_df(const std::string& raw,
+                                                const std::string& runtime,
+                                                const std::string& label) {
     std::vector<CleanupItem> items;
-
-    auto raw = run_cmd("docker system df 2>/dev/null");
-    if (raw.empty())
-        return items;
-
     std::istringstream ss(raw);
     std::string line;
-
-    if (!std::getline(ss, line))
-        return items;
 
     while (std::getline(ss, line)) {
         if (line.empty())
             continue;
         std::istringstream ls(line);
         std::string type, total, active, size_str, reclaim_str;
-        if (!(ls >> type >> total >> active >> size_str))
+        if (!std::getline(ls, type, '\t') || !std::getline(ls, total, '\t')
+            || !std::getline(ls, active, '\t') || !std::getline(ls, size_str, '\t'))
             continue;
         std::getline(ls, reclaim_str);
-        if (!reclaim_str.empty() && reclaim_str[0] == ' ')
-            reclaim_str = reclaim_str.substr(1);
 
-        auto reclaimable = parse_size(reclaim_str);
+        auto reclaimable = ContainerCleaner::parse_size(reclaim_str);
         if (reclaimable == 0)
             continue;
 
-        std::string id = "docker-" + type;
-        for (auto& c : id)
+        std::string id = runtime + "-" + type;
+        for (auto& c : id) {
             c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            if (c == ' ')
+                c = '-';
+        }
 
         CleanupItem ci;
         ci.id          = id;
-        ci.description = "Docker " + type + " (" + total + " items, "
+        ci.description = label + " " + type + " (" + total + " items, "
                          + reclaim_str + " reclaimable)";
         ci.size        = reclaimable;
         ci.category    = "containers";
         ci.risk        = Risk::Caution;
         ci.reversible  = false;
-        ci.metadata["runtime"] = "docker";
+        ci.metadata["runtime"] = runtime;
         ci.metadata["type"]    = type;
         items.push_back(std::move(ci));
     }
@@ -234,52 +233,18 @@ std::vector<CleanupItem> ContainerCleaner::scan_docker() const {
     return items;
 }
 
+std::vector<CleanupItem> ContainerCleaner::scan_docker() const {
+    auto raw = run_cmd("docker system df --format "
+        "'{{.Type}}\t{{.TotalCount}}\t{{.Active}}\t{{.Size}}\t{{.Reclaimable}}'"
+        " 2>/dev/null");
+    return parse_system_df(raw, "docker", "Docker");
+}
+
 std::vector<CleanupItem> ContainerCleaner::scan_podman() const {
-    std::vector<CleanupItem> items;
-
-    auto raw = run_cmd("podman system df 2>/dev/null");
-    if (raw.empty())
-        return items;
-
-    std::istringstream ss(raw);
-    std::string line;
-
-    if (!std::getline(ss, line))
-        return items;
-
-    while (std::getline(ss, line)) {
-        if (line.empty())
-            continue;
-        std::istringstream ls(line);
-        std::string type, total, active, size_str, reclaim_str;
-        if (!(ls >> type >> total >> active >> size_str))
-            continue;
-        std::getline(ls, reclaim_str);
-        if (!reclaim_str.empty() && reclaim_str[0] == ' ')
-            reclaim_str = reclaim_str.substr(1);
-
-        auto reclaimable = parse_size(reclaim_str);
-        if (reclaimable == 0)
-            continue;
-
-        std::string id = "podman-" + type;
-        for (auto& c : id)
-            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-
-        CleanupItem ci;
-        ci.id          = id;
-        ci.description = "Podman " + type + " (" + total + " items, "
-                         + reclaim_str + " reclaimable)";
-        ci.size        = reclaimable;
-        ci.category    = "containers";
-        ci.risk        = Risk::Caution;
-        ci.reversible  = false;
-        ci.metadata["runtime"] = "podman";
-        ci.metadata["type"]    = type;
-        items.push_back(std::move(ci));
-    }
-
-    return items;
+    auto raw = run_cmd("podman system df --format "
+        "'{{.Type}}\t{{.Total}}\t{{.Active}}\t{{.Size}}\t{{.Reclaimable}}'"
+        " 2>/dev/null");
+    return parse_system_df(raw, "podman", "Podman");
 }
 
 std::vector<CleanupItem> ContainerCleaner::scan() {

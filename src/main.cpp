@@ -19,11 +19,13 @@
 #include "stale_log_detector.hpp"
 
 #include <CLI/CLI.hpp>
+#include <algorithm>
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <regex>
 #include <set>
 #include <sstream>
 #include <string>
@@ -39,13 +41,16 @@ static bool confirm_action(const std::string& prompt) {
     return line == "y" || line == "Y" || line == "yes" || line == "YES";
 }
 
-// Maps a ScanResult detector name to a stable DB cleaner category
+// Maps a ScanResult detector name to a stable DB cleaner category.
+// Detector names carry details ("age-based (>30 days)", "pattern (*.tmp)"),
+// so match on the prefix.
 static const char* detector_category(const std::string& name) {
-    if (name == "age_based")  return "tmp-cache";
-    if (name == "pattern")    return "tmp-files";
-    if (name == "broken_symlink") return "broken-symlinks";
-    if (name == "orphaned-package") return "orphaned-packages";
-    if (name == "stale_log")      return "stale-logs";
+    auto starts = [&](const char* p) { return name.rfind(p, 0) == 0; };
+    if (starts("age-based"))        return "tmp-cache";
+    if (starts("pattern"))          return "tmp-files";
+    if (starts("broken-symlink"))   return "broken-symlinks";
+    if (starts("orphaned-package")) return "orphaned-packages";
+    if (starts("stale-log"))        return "stale-logs";
     return "other";
 }
 
@@ -135,7 +140,15 @@ int main(int argc, char** argv) {
                  "Report systemd journal disk usage");
 
     app.add_option("--journal-vacuum", journal_vacuum_target,
-                   "Vacuum journal to target size (e.g. 500M, 200M)—implies --journal-clean");
+                   "Vacuum journal to target size (e.g. 500M, 200M)—implies --journal-clean")
+        ->check(CLI::Validator(
+            [](std::string& v) -> std::string {
+                static const std::regex re(R"(^[0-9]+(\.[0-9]+)?[KMGT]?$)");
+                return std::regex_match(v, re)
+                    ? std::string{}
+                    : "size must look like 500M, 1G or 200K";
+            },
+            "SIZE"));
 
     app.add_option("--list-quarantine", list_quarantine_dir,
                    "List files in a quarantine directory");
@@ -238,6 +251,17 @@ int main(int argc, char** argv) {
         return do_restore(list_quarantine_dir) ? 0 : 1;
     }
 
+    // --restore / --restore-all need a quarantine directory to work on
+    if (!restore_ids.empty() || flag_restore_all) {
+        if (quarantine_dir.empty()) {
+            std::cerr << C(color::red) << "error: --restore and --restore-all "
+                      << "need --quarantine <dir> or --list-quarantine <dir>"
+                      << C(color::reset) << '\n';
+            return 1;
+        }
+        return do_restore(quarantine_dir) ? 0 : 1;
+    }
+
     // Load config file (if provided), CLI overrides config
     if (!config_path.empty()) {
         auto cfg = load_config(config_path);
@@ -260,22 +284,23 @@ int main(int argc, char** argv) {
 
     // ── Watch mode ─────────────────────────────────────────────────
     static volatile std::sig_atomic_t watch_stop = 0;
-    auto sigh = [](int) { watch_stop = 1; };
-    std::signal(SIGINT, sigh);
-    std::signal(SIGTERM, sigh);
 
     auto build_scanner = [&]() -> std::unique_ptr<Scanner> {
         auto s = std::make_unique<Scanner>();
         for (const auto& b : extra_blacklist)
             s->add_blacklist(fs::path(b));
 
-        auto add_path = [&](const char* env, const char* fallback) {
-            const char* p = std::getenv(env);
-            s->add_target(p ? fs::path(p) : fs::path(fallback));
-        };
-
-        add_path("TMPDIR", "/tmp");
-        add_path("TMP", "/var/tmp");
+        // $TMPDIR (or /tmp), plus /var/tmp. $TMP is added only when it
+        // points somewhere else, so it can't replace /var/tmp.
+        const char* tmpdir = std::getenv("TMPDIR");
+        fs::path tmp_target = (tmpdir && *tmpdir) ? fs::path(tmpdir) : fs::path("/tmp");
+        s->add_target(tmp_target);
+        if (tmp_target != "/var/tmp")
+            s->add_target("/var/tmp");
+        const char* tmp_env = std::getenv("TMP");
+        if (tmp_env && *tmp_env && fs::path(tmp_env) != tmp_target
+            && fs::path(tmp_env) != "/var/tmp")
+            s->add_target(fs::path(tmp_env));
 
         s->add_target(home ? fs::path(home) / ".cache" : fs::path("/tmp/.cache"));
 
@@ -299,6 +324,11 @@ int main(int argc, char** argv) {
     };
 
     if (flag_watch) {
+        // Only watch mode traps Ctrl+C; elsewhere it must still abort
+        auto sigh = [](int) { watch_stop = 1; };
+        std::signal(SIGINT, sigh);
+        std::signal(SIGTERM, sigh);
+
         std::cout << C(color::bold) << "Watch mode active (interval: "
                   << watch_interval_sec << "s). Press Ctrl+C to stop.\n"
                   << C(color::reset);
@@ -308,7 +338,6 @@ int main(int argc, char** argv) {
 
         while (!watch_stop) {
             iteration++;
-            auto scan_start = std::chrono::steady_clock::now();
 
             auto s = build_scanner();
             auto results = s->run();
@@ -346,7 +375,9 @@ int main(int argc, char** argv) {
                 // Desktop notification
                 std::string notify_cmd = "notify-send -a lfscan"
                     " 'lfscan watch' '" + msg.str() + "' 2>/dev/null";
-                std::system(notify_cmd.c_str());
+                if (std::system(notify_cmd.c_str()) != 0) {
+                    // notify-send missing or no session bus; console output is enough
+                }
             } else if (results.empty()) {
                 if (previous.empty())
                     std::cout << "[" << iteration << "] "
@@ -407,6 +438,12 @@ int main(int argc, char** argv) {
         scan_id = history.log_scan(rec);
     }
 
+    auto elapsed_ms = [&] {
+        return static_cast<std::int64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - scan_start).count());
+    };
+
     // ── Run scan ─────────────────────────────────────────────────
     auto results = scanner->run();
 
@@ -426,9 +463,6 @@ int main(int argc, char** argv) {
 
     Reporter reporter(!flag_no_color, flag_json);
     reporter.print_results(results);
-
-    if (results.empty())
-        return 0;
 
     // Separate action-safe files from blacklisted ones
     std::vector<ScanResult> actionable;
@@ -581,6 +615,12 @@ int main(int argc, char** argv) {
                   << C(color::reset);
     }
 
+    if (results.empty()) {
+        if (have_db && scan_id >= 0)
+            history.update_scan_duration(scan_id, elapsed_ms());
+        return 0;
+    }
+
     if (actionable.empty()) {
         if (!flag_json)
             std::cout << C(color::yellow)
@@ -667,14 +707,8 @@ int main(int argc, char** argv) {
     }
 
     // ── History: update scan duration ────────────────────────────
-    if (have_db && scan_id >= 0) {
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - scan_start).count();
-        // Update the scan record's duration_ms (we could add an update method,
-        // but for now the scan is already logged with duration_ms=0 — the precision
-        // trade-off is acceptable for the initial integration)
-        // TODO: add HistoryDB::update_scan_duration(scan_id, elapsed)
-    }
+    if (have_db && scan_id >= 0)
+        history.update_scan_duration(scan_id, elapsed_ms());
 
     return 0;
 }

@@ -15,8 +15,8 @@
 std::string JournalCleaner::run_cmd(const std::string& cmd) {
     std::array<char, 4096> buf{};
     std::string result;
-    std::unique_ptr<FILE, decltype(&pclose)> pipe(
-        popen(cmd.c_str(), "r"), pclose);
+    auto closer = [](FILE* f) { pclose(f); };
+    std::unique_ptr<FILE, decltype(closer)> pipe(popen(cmd.c_str(), "r"), closer);
     if (!pipe)
         return {};
     while (fgets(buf.data(), buf.size(), pipe.get()) != nullptr)
@@ -125,7 +125,10 @@ CleanupResult JournalCleaner::clean(const std::vector<CleanupItem>& items) {
                 item.metadata.at("current_size"));
         } catch (...) {}
 
-        auto target = parse_size(vacuum_target_);
+        // The target goes into a shell command: accept only "<number>[KMGT]"
+        static const std::regex valid_target(R"(^[0-9]+(\.[0-9]+)?[KMGT]?$)");
+        auto target = std::regex_match(vacuum_target_, valid_target)
+                          ? parse_size(vacuum_target_) : 0;
         if (target == 0) {
             result.errors.push_back("invalid vacuum target: "
                                     + vacuum_target_);

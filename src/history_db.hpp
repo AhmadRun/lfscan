@@ -33,6 +33,7 @@ public:
     bool is_open() const { return db_ != nullptr; }
 
     std::int64_t log_scan(const ScanRecord& rec);
+    bool         update_scan_duration(std::int64_t scan_id, std::int64_t duration_ms);
     bool         log_result(const HistoryEntry& entry);
 
     std::vector<HistoryEntry> query(const std::string& cleaner = "",
