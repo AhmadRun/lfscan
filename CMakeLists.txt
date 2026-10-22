@@ -1,7 +1,7 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.16...4.4)
 project(lfscan VERSION 0.1.0 LANGUAGES C CXX)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -26,7 +26,7 @@ else()
   include(FetchContent)
   FetchContent_Declare(
     sqlite3
-    URL https://www.sqlite.org/2025/sqlite-amalgamation-3490100.zip
+    URL https://www.sqlite.org/2026/sqlite-amalgamation-3540100.zip
     SOURCE_SUBDIR NONE
   )
   FetchContent_MakeAvailable(sqlite3)
