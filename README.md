@@ -2,7 +2,7 @@
 
 **Linux temp, cache & system cleanup tool** — reclaim disk space, manage package manager caches, and keep your system clean.
 
-[![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus)](https://isocpp.org)
+[![C++23](https://img.shields.io/badge/C%2B%2B-23-00599C?logo=cplusplus)](https://isocpp.org)
 [![CMake](https://img.shields.io/badge/CMake-%3E%3D3.16-064F8C?logo=cmake)](https://cmake.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -44,7 +44,7 @@
 
 ### Build from source
 
-**Dependencies:** C++20 compiler, CMake ≥3.16, `git`, SQLite3, and `libncurses`/`libfreetype` (for TUI).
+**Dependencies:** C++23 compiler, CMake ≥3.16, `git`, SQLite3, and `libncurses`/`libfreetype` (for TUI).
 
 ```bash
 git clone git@github.com:AhmadRun/lfscan.git

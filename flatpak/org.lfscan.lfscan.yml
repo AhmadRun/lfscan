@@ -1,6 +1,6 @@
 id: org.lfscan.lfscan
 runtime: org.freedesktop.Sdk
-runtime-version: '24.08'
+runtime-version: '26.08'
 sdk: org.freedesktop.Sdk
 command: lfscan
 
